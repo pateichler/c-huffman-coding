@@ -24,6 +24,7 @@ typedef struct Queue{
     int size;
 } Queue;
 
+/// @brief Strucutre to represent bits of variable length
 typedef struct BitCode
 {
     unsigned int code;
@@ -36,11 +37,35 @@ typedef struct DecodeItem
     BitCode code;
 } DecodeItem;
 
-typedef struct BufferData
+typedef struct IOFile
 {
-    unsigned char data[BUFSIZ];
-    unsigned int paddedBits;
-} BufferData;
+    FILE *inputFile;
+    FILE *outputFile;
+} IOFile;
+
+IOFile getIOFile(char *fileInputName, char *fileOutputName){
+    FILE *inputFile = fopen(fileInputName, "r");
+    if (inputFile == NULL){
+        fprintf(stderr, "Could not open input file: %s\n", fileInputName);
+        return (IOFile) {NULL,NULL};
+    }
+        
+
+    FILE *outputFile = fopen(fileOutputName, "wb");
+    if(outputFile == NULL){
+        fclose(inputFile);
+
+        fprintf(stderr, "Could not open input file: %s\n", fileOutputName);
+        return (IOFile) {NULL,NULL};
+    }
+
+    return (IOFile) {inputFile, outputFile};
+}
+
+void closeIOFile(IOFile ioFile){
+    fclose(ioFile.inputFile);
+    fclose(ioFile.outputFile);
+}
 
 void print_bin(BitCode code)
 {
@@ -108,7 +133,7 @@ Queue *create_queue(char *filename){
     FILE* stream = fopen(filename, "r");
 
     if (stream == NULL){
-        printf("Error: the file is not found!\n");
+        fprintf(stderr, "Could not find file!\n");
         return NULL;
     }
 
@@ -184,7 +209,7 @@ BitCode get_decode_item(DecodeItem *table, char item){
         table++;
     }
     
-    printf("Error: No decode item found! Attempted to get character: %c\n", item);
+    fprintf(stderr, "No decode item found! Attempted to get character: %c\n", item);
     return (BitCode) {0,0};
 }
 
@@ -211,32 +236,25 @@ void add_char_to_buffer(char *buffer, char data, unsigned int *buffBytePos, FILE
     }
 }
 
-void decode_file(char *fileInputName, char *fileOutputName, Node* rootNode){
+int decode_file(IOFile ioFile, Node* rootNode){
     unsigned char inputBuffer[HUFF_BUFF_SIZE];
     char outputBuffer[HUFF_BUFF_SIZE];
 
     unsigned int outBuffPos = 0;
     Node *curNode = rootNode;
 
-    FILE *inputFile = fopen(fileInputName, "r");
-    FILE *outputFile = fopen(fileOutputName, "wb");
-
-    if (inputFile == NULL || outputFile == NULL){
-        printf("Error: could not open file!\n");
-        return;
-    }
-
-    int endBits = fgetc(inputFile);
+    int endBits = fgetc(ioFile.inputFile);
 
     size_t readLength = HUFF_BUFF_SIZE;
     while (readLength == HUFF_BUFF_SIZE)
     {
-        readLength = fread(inputBuffer, sizeof(char), HUFF_BUFF_SIZE, inputFile);
-        int nextChar = peekNextChar(inputFile);
+        readLength = fread(inputBuffer, sizeof(char), HUFF_BUFF_SIZE, ioFile.inputFile);
+        int nextChar = peekNextChar(ioFile.inputFile);
 
-        if(ferror(inputFile) != 0){
-            printf("Error: could not read file!");
-            goto close;
+        if(ferror(ioFile.inputFile) != 0){
+            fprintf(stderr, "Could not read file!\n");
+            closeIOFile(ioFile);
+            return 1;
         }
         
         for(int c = 0; c < readLength; c++){
@@ -249,29 +267,25 @@ void decode_file(char *fileInputName, char *fileOutputName, Node* rootNode){
                 
                 //Probably want to check for null char on item in future
                 if(curNode->left == NULL || curNode->right == NULL){
-                    add_char_to_buffer(outputBuffer, curNode->item, &outBuffPos, outputFile);
+                    add_char_to_buffer(outputBuffer, curNode->item, &outBuffPos, ioFile.outputFile);
                     curNode = rootNode;
                 }
             }
         }
     }
 
+    // Flush out remaining buffer
     if (outBuffPos > 0)
-        fwrite(outputBuffer, outBuffPos, 1, outputFile);
+        fwrite(outputBuffer, outBuffPos, 1, ioFile.outputFile);
 
 
-    close:
-    fclose(inputFile);
-    fclose(outputFile);
+    closeIOFile(ioFile);
+    return 0;
 }
 
-void encode_data(char *outputBuffer, BitCode *data, unsigned int *buffBytePos, unsigned char *outBuffBitPos){
+void add_bit_code_to_buffer(char *outputBuffer, BitCode *data, unsigned int *buffBytePos, unsigned char *outBuffBitPos){
     if(data->numBits <= 0)
         return;
-    
-    //TODO: Remove buffByte position & instead use array pointer with null terminated character, perhaps at 1023?
-    // and also make outputBuffer a double pointer
-    //TODO: Probably want to return BitCode and not pass by reference
 
     while (data->numBits > 0 && *buffBytePos < HUFF_BUFF_SIZE)
     {
@@ -298,51 +312,45 @@ void encode_data(char *outputBuffer, BitCode *data, unsigned int *buffBytePos, u
     }
 }
 
-void encode_file(char *fileInputName, char *fileOutputName, DecodeItem *decodeTable){
+int encode_file(IOFile ioFile, DecodeItem *decodeTable){
     char inputBuffer[HUFF_BUFF_SIZE];
     char outputBuffer[HUFF_BUFF_SIZE] = {0};
 
     unsigned int outBuffByte = 0;
     unsigned char outBuffBit = 0;
 
-    FILE *inputFile = fopen(fileInputName, "r");
-    FILE *outputFile = fopen(fileOutputName, "wb");
-
-    if (inputFile == NULL || outputFile == NULL){
-        printf("Error: could not open file!\n");
-        return;
-    }
-
     // Add blank metadata for number of bits at the end
-    fwrite(&outBuffBit, 1, 1, outputFile);
+    fwrite(&outBuffBit, 1, 1, ioFile.outputFile);
 
     size_t readLength = HUFF_BUFF_SIZE;
     while (readLength == HUFF_BUFF_SIZE)
     {
-        readLength = fread(inputBuffer, sizeof(char), HUFF_BUFF_SIZE, inputFile);
+        readLength = fread(inputBuffer, sizeof(char), HUFF_BUFF_SIZE, ioFile.inputFile);
 
-        if(ferror(inputFile) != 0){
-            printf("Error: could not read file!");
-            goto close;
+        if(ferror(ioFile.inputFile) != 0){
+            fprintf(stderr, "Could not read file!\n");
+            closeIOFile(ioFile);
+            return 1;
         }
         
         for(int c = 0; c < readLength; c++){
             BitCode b = get_decode_item(decodeTable, inputBuffer[c]);
             if(b.numBits == 0){
-                printf("Error: character %c is not defined!\n", inputBuffer[c]);
-                goto close;
+                fprintf(stderr, "Character %c is not defined!\n", inputBuffer[c]);
+                closeIOFile(ioFile);
+                return 1;
             }
 
-            encode_data(outputBuffer, &b, &outBuffByte, &outBuffBit);
+            add_bit_code_to_buffer(outputBuffer, &b, &outBuffByte, &outBuffBit);
             
-            // Flush out buffer
+            // Flush out buffer ... and write remaining bit code if not finished
             if(outBuffByte == HUFF_BUFF_SIZE){
-                fwrite(outputBuffer, HUFF_BUFF_SIZE, 1, outputFile);
+                fwrite(outputBuffer, HUFF_BUFF_SIZE, 1, ioFile.outputFile);
                 outBuffByte = 0;
                 outBuffBit = 0;
                 memset(outputBuffer, 0, sizeof(outputBuffer));
 
-                encode_data(outputBuffer, &b, &outBuffByte, &outBuffBit);
+                add_bit_code_to_buffer(outputBuffer, &b, &outBuffByte, &outBuffBit);
             }
         }
     }
@@ -352,20 +360,16 @@ void encode_file(char *fileInputName, char *fileOutputName, DecodeItem *decodeTa
         // Shift over last byte
         outputBuffer[outBuffByte] <<= (8 - outBuffBit);
         
-        fwrite(outputBuffer, (size_t) (outBuffByte+1), 1, outputFile);
+        fwrite(outputBuffer, (size_t) (outBuffByte+1), 1, ioFile.outputFile);
     }
 
     // Add metadata for number of bits at the end
-    fseek(outputFile, 0, SEEK_SET);
-    fwrite(&outBuffBit, 1, 1, outputFile);
+    fseek(ioFile.outputFile, 0, SEEK_SET);
+    fwrite(&outBuffBit, 1, 1, ioFile.outputFile);
 
-    close:
-    fclose(inputFile);
-    fclose(outputFile);
-
+    closeIOFile(ioFile);
+    return 0;
 }
-
-
 
 int main(void){
 
@@ -373,11 +377,7 @@ int main(void){
     // Some points to improve:
     // - Clean up queue memory allocation & make sure everything is deleted
     // - Change lookup table to use a binary tree
-    // - Refactor some of the encoding and decoding methods
-    //      - Make some methods into sub methods
     // - Seperate parts into sepearte C files for better organization
-    // - Better managment of File opening and closing
-    // - Better error reporting
 
     // Some features that would be nice:
     // - Add command line arguments to be able to execute this code from the command line
@@ -404,6 +404,9 @@ int main(void){
         return 1;
     }
 
-    encode_file("testEncode.txt", "testOutput.huf", decodeTable);
-    decode_file("testOutput.huf", "testDecode.txt", rootNode);
+    IOFile ioEncode = getIOFile("testEncode.txt", "testOutput.huf");
+    encode_file(ioEncode, decodeTable);
+    
+    IOFile ioDecode = getIOFile("testOutput.huf", "testDecode.txt");
+    decode_file(ioDecode, rootNode);
 }
