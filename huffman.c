@@ -74,10 +74,10 @@ void print_bin(BitCode code)
 }
 
 
-void add_queue(Queue *queue, Node *node){
+QueueElement* add_queue(Queue *queue, Node *node){
     QueueElement *newElement = (QueueElement *) malloc(sizeof(QueueElement)); 
     if(newElement == NULL)
-        return;
+        return NULL;
 
     newElement->node = node;
     newElement->next = NULL;
@@ -87,7 +87,7 @@ void add_queue(Queue *queue, Node *node){
     // If no elements in queue, set element as first    
     if(queue->head == NULL){
         queue->head = newElement;
-        return;
+        return newElement;
     }
     
     QueueElement *current = queue->head;
@@ -103,7 +103,7 @@ void add_queue(Queue *queue, Node *node){
             }
                 
             newElement->next = current;
-            return;
+            return newElement;
         }
 
         previous = current;
@@ -111,6 +111,7 @@ void add_queue(Queue *queue, Node *node){
     }
 
     previous->next = newElement;
+    return newElement;
 }
 
 Node *popQueue(Queue *queue){
@@ -127,6 +128,13 @@ Node *popQueue(Queue *queue){
     free(h);
 
     return node;
+}
+
+void destroy_queue(Queue *queue){
+    while (queue->head != NULL)
+        free(popQueue(queue));
+    
+    free(queue);
 }
 
 Queue *create_queue(char *filename){
@@ -146,21 +154,35 @@ Queue *create_queue(char *filename){
             char* tmp = strdup(line);
             char c = tmp[0];
             float val = strtof(tmp + 2, NULL);
+            free(tmp);
 
             Node *newNode = (Node *) malloc(sizeof(Node)); 
             
-            if (newNode == NULL)
+            if (newNode == NULL){
+                destroy_queue(queue);
+                fclose(stream);
                 return NULL;
+            }
 
             *newNode = (Node){c, val, NULL, NULL};
-            add_queue(queue, newNode);
-            
-            free(tmp);
+            if(add_queue(queue, newNode) == NULL){
+                free(newNode);
+                destroy_queue(queue);
+            }
         }
     }
 
     fclose(stream);
     return queue;
+}
+
+void destroy_tree(Node *node){
+    if(node->left != NULL)
+        destroy_tree(node->left);
+    if(node->right != NULL)
+        destroy_tree(node->right);
+    
+    free(node);
 }
 
 Node *create_node_tree(Queue *queue){
@@ -169,8 +191,16 @@ Node *create_node_tree(Queue *queue){
         Node *node2 = popQueue(queue);
 
         Node *parentNode = (Node *) malloc(sizeof(Node));
+        
+        if(parentNode == NULL)
+            return NULL;
+
         *parentNode = (Node){'_', node1->weight + node2->weight, node1, node2};
-        add_queue(queue, parentNode);
+        
+        if(add_queue(queue, parentNode) == NULL){
+            destroy_tree(parentNode);
+            return NULL;
+        }
     }
 
     return popQueue(queue);
@@ -375,7 +405,6 @@ int main(void){
 
     //TODO: This program can still be optimized in a number of ways
     // Some points to improve:
-    // - Clean up queue memory allocation & make sure everything is deleted
     // - Change lookup table to use a binary tree
     // - Seperate parts into sepearte C files for better organization
 
@@ -395,6 +424,11 @@ int main(void){
     int numElements = queue->size;
     
     Node* rootNode = create_node_tree(queue);
+    if(rootNode == NULL){
+        fprintf(stderr, "Huffman tree could not be constructed!");
+        return 1;
+    }
+
     free(queue);
 
     DecodeItem *decodeTable = create_decode_table(rootNode, numElements);
